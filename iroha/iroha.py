@@ -266,7 +266,7 @@ class Iroha(object):
         return query_wrapper
 
     @staticmethod
-    def batch(atomic=True, *transactions):
+    def batch(transactions, atomic=True):
         """
         Tie transactions to be a single batch. All of them will have a common batch meta.
         :param transactions: list of transactions to be tied into a batch
@@ -291,93 +291,120 @@ class IrohaGrpc(object):
     Possible implementation of gRPC transport to Iroha
     """
 
-    def __init__(self, address=None):
+    def __init__(self, address=None, timeout=None):
+        """
+        Create Iroha gRPC client
+        :param address: Iroha Torii address with port, example "127.0.0.1:50051"
+        :param timeout: timeout for network I/O operations in seconds
+        """
         self._address = address if address else '127.0.0.1:50051'
         self._channel = grpc.insecure_channel(self._address)
+        self._timeout = timeout
         self._command_service_stub = endpoint_pb2_grpc.CommandService_v1Stub(
             self._channel)
         self._query_service_stub = endpoint_pb2_grpc.QueryService_v1Stub(
             self._channel)
 
-    def send_tx(self, transaction):
+    def send_tx(self, transaction, timeout=None):
         """
         Send a transaction to Iroha
         :param transaction: protobuf Transaction
+        :param timeout: timeout for network I/O operations in seconds
         :return: None
+        :raise: grpc.RpcError with .code() available in case of any error
         """
-        code = grpc.StatusCode.OK
-        try:
-            self._command_service_stub.Torii(transaction)
-        except grpc.RpcError as error:
-            code = error.code()
-            print('Error occurred inside send_tx:', error)
-        return code
+        if not timeout:
+            timeout = self._timeout
+        self._command_service_stub.Torii(transaction, timeout=timeout)
 
-    def send_txs(self, *transactions):
+    def send_txs(self, transactions, timeout=None):
         """
         Send a series of transactions to Iroha at once.
         Useful for submitting batches of transactions.
-        :param transactions: protobuf transactions to be sent
+        :param transactions: list of protobuf transactions to be sent
+        :param timeout: timeout for network I/O operations in seconds
         :return: None
+        :raise: grpc.RpcError with .code() available in case of any error
         """
+        if not timeout:
+            timeout = self._timeout
         tx_list = endpoint_pb2.TxList()
         tx_list.transactions.extend(transactions)
-        code = grpc.StatusCode.OK
-        try:
-            self._command_service_stub.ListTorii(tx_list)
-        except grpc.RpcError as error:
-            code = error.code()
-            print('Error occurred inside send_txs:', error)
-        return code
+        self._command_service_stub.ListTorii(tx_list, timeout=timeout)
 
-    def send_query(self, query):
+    def send_query(self, query, timeout=None):
         """
         Send a query to Iroha
         :param query: protobuf Query
+        :param timeout: timeout for network I/O operations in seconds
         :return: a protobuf response to the query
         :raise: grpc.RpcError with .code() available in case of any error
         """
-        response = self._query_service_stub.Find(query)
+        if not timeout:
+            timeout = self._timeout
+        response = self._query_service_stub.Find(query, timeout=timeout)
         return response
 
-    def send_blocks_stream_query(self, query):
+    def send_blocks_stream_query(self, query, timeout=None):
         """
         Send a query for blocks stream to Iroha
         :param query: protobuf BlocksQuery
+        :param timeout: timeout for network I/O operations in seconds
         :return: an iterable over a stream of blocks
         :raise: grpc.RpcError with .code() available in case of any error
         """
-        response = self._query_service_stub.FetchCommits(query)
+        if not timeout:
+            timeout = self._timeout
+        response = self._query_service_stub.FetchCommits(
+            query, timeout=timeout)
         for block in response:
             yield block
 
-    def tx_status(self, transaction):
+    def tx_status(self, transaction, timeout=None):
         """
         Request a status of a transaction
         :param transaction: the transaction, which status is about to be known
+        :param timeout: timeout for network I/O operations in seconds
         :return: a tuple with the symbolic status description,
-        integral status code, and error message string (will be empty if no error occurred)
+        integral status code, and error code (will be 0 if no error occurred)
+        :raise: grpc.RpcError with .code() available in case of any error
         """
+        if not timeout:
+            timeout = self._timeout
         request = endpoint_pb2.TxStatusRequest()
         request.tx_hash = binascii.hexlify(IrohaCrypto.hash(transaction))
-        response = self._command_service_stub.Status(request)
-        status_code = response.tx_status
-        status_name = endpoint_pb2.TxStatus.Name(response.tx_status)
-        error_message = response.error_message
-        return status_name, status_code, error_message
+        response = self._command_service_stub.Status(request, timeout=timeout)
+        return self._parse_tx_status(response)
 
-    def tx_status_stream(self, transaction):
+    def tx_status_stream(self, transaction, timeout=None):
         """
         Generator of transaction statuses from status stream
         :param transaction: the transaction, which status is about to be known
+        :param timeout: timeout for network I/O operations in seconds
         :return: an iterable over a series of tuples with symbolic status description,
-        integral status code, and error message string (will be empty if no error occurred)
+        integral status code, and error code (will be 0 if no error occurred)
+        :raise: grpc.RpcError with .code() available in case of any error
         """
+        if not timeout:
+            timeout = self._timeout
         request = endpoint_pb2.TxStatusRequest()
         request.tx_hash = binascii.hexlify(IrohaCrypto.hash(transaction))
-        response = self._command_service_stub.StatusStream(request)
+        response = self._command_service_stub.StatusStream(
+            request, timeout=timeout)
         for status in response:
-            status_name = endpoint_pb2.TxStatus.Name(status.tx_status)
-            status_code = status.tx_status
-            error_code = status.error_code
+            status_name, status_code, error_code = self._parse_tx_status(
+                status)
             yield status_name, status_code, error_code
+
+    @staticmethod
+    def _parse_tx_status(response):
+        """
+        Parse protocol.ToriiResponse into a tuple
+        :param response: response to be parsed
+        :return: a tuple with the symbolic status description,
+        integral status code, and error code (will be 0 if no error occurred)
+        """
+        status_name = endpoint_pb2.TxStatus.Name(response.tx_status)
+        status_code = response.tx_status
+        error_code = response.error_code
+        return status_name, status_code, error_code

@@ -7,7 +7,14 @@
 import binascii
 from iroha import IrohaCrypto as ic
 from iroha import Iroha, IrohaGrpc
+import os
 import sys
+
+IROHA_HOST_ADDR = os.getenv('IROHA_HOST_ADDR', '127.0.0.1')
+IROHA_PORT = os.getenv('IROHA_PORT', '50051')
+ADMIN_ACCOUNT_ID = os.getenv('ADMIN_ACCOUNT_ID', 'admin@test')
+ADMIN_PRIVATE_KEY = os.getenv(
+    'ADMIN_PRIVATE_KEY', 'f101537e319568c765b2cc89698325604991dca57b9716b58016b253506cab70')
 
 print("""
 
@@ -18,10 +25,8 @@ PLEASE ENSURE THAT MST IS ENABLED IN IROHA CONFIG
 if sys.version_info[0] < 3:
     raise Exception('Python 3 or a more recent version is required.')
 
-iroha = Iroha('admin@test')
-net = IrohaGrpc()
-
-admin_private_key = 'f101537e319568c765b2cc89698325604991dca57b9716b58016b253506cab70'
+iroha = Iroha(ADMIN_ACCOUNT_ID)
+net = IrohaGrpc('{}:{}'.format(IROHA_HOST_ADDR, IROHA_PORT))
 
 alice_private_keys = [
     'f101537e319568c765b2cc89698325604991dca57b9716b58016b253506caba1',
@@ -63,9 +68,9 @@ def send_transaction_and_print_status(transaction):
 
 
 @trace
-def send_batch_and_print_status(*transactions):
+def send_batch_and_print_status(transactions):
     global net
-    net.send_txs(*transactions)
+    net.send_txs(transactions)
     for tx in transactions:
         hex_hash = binascii.hexlify(ic.hash(tx))
         print('\t' + '-' * 20)
@@ -97,7 +102,7 @@ def create_users():
                       asset_id='dogecoin#test', description='init doge', amount='20000')
     ]
     init_tx = iroha.transaction(init_cmds)
-    ic.sign_transaction(init_tx, admin_private_key)
+    ic.sign_transaction(init_tx, ADMIN_PRIVATE_KEY)
     send_transaction_and_print_status(init_tx)
 
 
@@ -145,10 +150,10 @@ def alice_creates_exchange_batch():
         # alice does not know bob's quorum.
         # bob knowing own quorum in case of accept should sign the tx using all the number of missing keys at once
     )
-    iroha.batch(alice_tx, bob_tx, atomic=True)
+    iroha.batch([alice_tx, bob_tx], atomic=True)
     # sign transactions only after batch meta creation
     ic.sign_transaction(alice_tx, *alice_private_keys)
-    send_batch_and_print_status(alice_tx, bob_tx)
+    send_batch_and_print_status([alice_tx, bob_tx])
 
 
 @trace
@@ -166,7 +171,7 @@ def bob_accepts_exchange_request():
         else:
             ic.sign_transaction(tx, *bob_private_keys)
     send_batch_and_print_status(
-        *pending_transactions.transactions_response.transactions)
+        pending_transactions.transactions_response.transactions)
 
 
 @trace
@@ -206,7 +211,7 @@ def bob_declines_exchange_request():
             ic.sign_transaction(tx, *alice_private_keys)
             # zeroes as private keys are also acceptable
     send_batch_and_print_status(
-        *pending_transactions.transactions_response.transactions)
+        pending_transactions.transactions_response.transactions)
 
 
 create_users()
